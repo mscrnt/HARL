@@ -36,6 +36,21 @@ class HomeAssistantProcessor:
         # Classify keys directly into observations and actions
         self.classify_keys()
 
+    def get_sensor_state(self, entity_id):
+        """
+        Retrieve the latest state of the specified entity.
+
+        :param entity_id: The entity ID for which to retrieve the state.
+        :return: The latest state value for the specified entity or None if not found.
+        """
+        if entity_id not in self.log_data["entity_id"].values:
+            LOGGER.warning(f"Entity '{entity_id}' not found in log data.")
+            return None
+
+        # Retrieve the most recent state for the entity
+        latest_state_row = self.log_data[self.log_data["entity_id"] == entity_id].iloc[-1]
+        return latest_state_row["state"]
+
     def _load_and_normalize_logs(self, log_file):
         """
         Load logs and normalize timestamps to the nearest second.
@@ -159,7 +174,7 @@ class HomeAssistantProcessor:
 
         LOGGER.warning(f"State '{state}' for entity '{entity_id}' is not mapped. Defaulting to 0.0.")
         return 0.0
-    
+
     @property
     def actionable_entities(self):
         """
@@ -214,4 +229,3 @@ class HomeAssistantProcessor:
             LOGGER.warning("Action space data is empty. Returning an empty DataFrame.")
             return pd.DataFrame()
         return self.action_data
-

@@ -14,22 +14,37 @@ import torch as th
 LOGGER = get_logger("PPOTrainer")
 
 
-def make_env(processor, rank):
+def make_env(log_file, action_mapping_file, automation_file, rank):
     """
-    Factory function for creating HomeAssistantEnv instances.
-    :param processor: Shared HomeAssistantProcessor instance.
-    :param rank: Rank of the environment (used for seeding, if needed).
+    Factory function for creating independent HomeAssistantEnv instances.
+    :param log_file: Path to the log file for the environment.
+    :param action_mapping_file: Path to the action mapping file for the environment.
+    :param automation_file: Path to the automation YAML file for the environment.
+    :param rank: Rank of the environment (used for logging or seeding if needed).
     """
     def _init():
         LOGGER.info(f"Creating environment instance for rank: {rank}")
+
+        # Initialize a new processor instance for this environment
+        processor = HomeAssistantProcessor(
+            log_file=log_file,
+            action_mapping_file=action_mapping_file
+        )
+
+        # Parse automations for this environment
+        try:
+            with open(automation_file, "r") as file:
+                automations = yaml.safe_load(file)
+        except Exception as e:
+            LOGGER.error(f"Failed to parse automations for environment {rank}: {e}")
+            raise
+
         observation_space_data = processor.get_observation_space()
         action_space_data = processor.get_action_space()
 
         if observation_space_data.empty:
-            LOGGER.error(f"Observation space is empty for rank {rank}. Cannot create environment.")
             raise ValueError(f"Observation space is empty for rank {rank}.")
         if action_space_data.empty:
-            LOGGER.error(f"Action space is empty for rank {rank}. Cannot create environment.")
             raise ValueError(f"Action space is empty for rank {rank}.")
 
         LOGGER.debug(f"Environment {rank} created with {len(observation_space_data)} observations and {len(action_space_data)} actions.")
@@ -64,7 +79,7 @@ if __name__ == "__main__":
     log_dir = "logs/tensorboard"
     save_dir = "models"
     save_freq = 1382400  # Frequency of saving the model (in steps)
-    num_envs = 2  # Number of parallel environments
+    num_envs = 32  # Number of parallel environments
     total_timesteps = 31_536_000  # Total timesteps for training
     n_epochs = 4  # Number of epochs for PPO updates
     n_steps = 1024  # Steps per environment before policy update
@@ -72,13 +87,6 @@ if __name__ == "__main__":
     LOGGER.info("Starting training script...")
     LOGGER.debug(f"Log file: {log_file}")
     LOGGER.debug(f"Configuration: num_envs={num_envs}, total_timesteps={total_timesteps}, n_steps={n_steps}, n_epochs={n_epochs}")
-
-    # Initialize shared processor with action mapping
-    processor = HomeAssistantProcessor(
-        log_file=log_file,
-        action_mapping_file=action_mapping_file
-    )
-    LOGGER.info("Shared HomeAssistantProcessor instance created.")
 
     # Parse automations
     try:
@@ -90,7 +98,10 @@ if __name__ == "__main__":
     # Create a vectorized environment with SubprocVecEnv
     try:
         LOGGER.info("Creating SubprocVecEnv for training...")
-        env = SubprocVecEnv([make_env(processor, i) for i in range(num_envs)])
+        env = SubprocVecEnv([
+            make_env(log_file, action_mapping_file, automation_file, rank=i)
+            for i in range(num_envs)
+        ])
         LOGGER.info("Vectorized environment created.")
     except Exception as e:
         LOGGER.error("Error during environment creation.", exc_info=True)
@@ -136,15 +147,16 @@ if __name__ == "__main__":
         )
         LOGGER.info(f"AutoSave callback configured: {autosave_callback}")
 
+        # Create a single RewardsCallback shared across environments
         rewards_callback = RewardsCallback(
-            processor=processor,
+            processor=HomeAssistantProcessor(log_file=log_file, action_mapping_file=action_mapping_file),
             automations=automations,
-            actionable_entities=processor.actionable_entities,
             penalty_weight=0.5,
-            verbose=1 
+            verbose=1
         )
         LOGGER.info("RewardsCallback configured.")
 
+        # Combine callbacks into a CallbackList
         callback_list = CallbackList([autosave_callback, rewards_callback])
         LOGGER.info("Callback list created.")
     except Exception as e:

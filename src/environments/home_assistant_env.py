@@ -9,6 +9,7 @@ import pandas as pd
 # Initialize the logger for this module
 LOGGER = get_logger("HomeAssistantEnv")
 
+
 class HomeAssistantEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
 
@@ -55,20 +56,34 @@ class HomeAssistantEnv(gym.Env):
                 unique_values = self.observation_space_data[col].dropna().unique()
                 if len(unique_values) > 0:
                     self.string_encoders[col] = {v: i for i, v in enumerate(unique_values, start=1)}
-                    self.observation_space_data[col] = self.observation_space_data[col].map(self.string_encoders[col]).fillna(0).astype(int)
+                    self.observation_space_data.loc[:, col] = (
+                        self.observation_space_data[col]
+                        .map(self.string_encoders[col])
+                        .fillna(0)
+                        .astype(int)
+                    )
                 else:
                     LOGGER.warning(f"Column '{col}' has no unique string values. Defaulting to a single class.")
                     self.string_encoders[col] = {None: 0}
-                    self.observation_space_data[col] = 0
+                    self.observation_space_data.loc[:, col] = 0
             elif pd.api.types.is_numeric_dtype(self.observation_space_data[col]):
                 # Ensure numeric columns have valid values
-                self.observation_space_data[col] = self.observation_space_data[col].fillna(0).astype(np.float32)
+                self.observation_space_data.loc[:, col] = (
+                    self.observation_space_data[col]
+                    .fillna(0)
+                    .astype(np.float32)
+                )
             else:
-                # Handle unexpected data types
                 LOGGER.warning(f"Unexpected data type in column '{col}'. Treating as categorical data.")
                 unique_values = self.observation_space_data[col].dropna().astype(str).unique()
                 self.string_encoders[col] = {v: i for i, v in enumerate(unique_values, start=1)}
-                self.observation_space_data[col] = self.observation_space_data[col].astype(str).map(self.string_encoders[col]).fillna(0).astype(int)
+                self.observation_space_data.loc[:, col] = (
+                    self.observation_space_data[col]
+                    .astype(str)
+                    .map(self.string_encoders[col])
+                    .fillna(0)
+                    .astype(int)
+                )
 
         # Define observation space
         self.feature_spaces = {
@@ -95,21 +110,36 @@ class HomeAssistantEnv(gym.Env):
                 unique_values = self.action_space_data[col].dropna().unique()
                 if len(unique_values) > 0:
                     self.action_string_encoders[col] = {v: i for i, v in enumerate(unique_values, start=1)}
-                    self.action_space_data[col] = self.action_space_data[col].map(self.action_string_encoders[col]).fillna(0).astype(int)
+                    self.action_space_data.loc[:, col] = (
+                        self.action_space_data[col]
+                        .map(self.action_string_encoders[col])
+                        .fillna(0)
+                        .astype(int)
+                    )
                     discrete_action_ranges.append(len(self.action_string_encoders[col]) + 1)
                 else:
                     LOGGER.warning(f"Column '{col}' has no unique string values. Defaulting to a single class.")
                     self.action_string_encoders[col] = {None: 0}
-                    self.action_space_data[col] = 0
+                    self.action_space_data.loc[:, col] = 0
                     discrete_action_ranges.append(1)
             elif pd.api.types.is_numeric_dtype(self.action_space_data[col]):
-                self.action_space_data[col] = self.action_space_data[col].fillna(0).astype(np.float32)
+                self.action_space_data.loc[:, col] = (
+                    self.action_space_data[col]
+                    .fillna(0)
+                    .astype(np.float32)
+                )
                 discrete_action_ranges.append(1)
             else:
                 LOGGER.warning(f"Unexpected data type in column '{col}'. Treating as categorical data.")
                 unique_values = self.action_space_data[col].dropna().astype(str).unique()
                 self.action_string_encoders[col] = {v: i for i, v in enumerate(unique_values, start=1)}
-                self.action_space_data[col] = self.action_space_data[col].astype(str).map(self.action_string_encoders[col]).fillna(0).astype(int)
+                self.action_space_data.loc[:, col] = (
+                    self.action_space_data[col]
+                    .astype(str)
+                    .map(self.action_string_encoders[col])
+                    .fillna(0)
+                    .astype(int)
+                )
                 discrete_action_ranges.append(len(self.action_string_encoders[col]) + 1)
 
         # Use MultiDiscrete for the combined action space
@@ -122,13 +152,22 @@ class HomeAssistantEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         """
-        Reset the environment to the initial state.
+        Reset the environment to the initial state and select a random day for training.
         """
-        LOGGER.info("Resetting environment...")
+        LOGGER.debug("Resetting environment...")
         super().reset(seed=seed)
+
+        # Ensure timestamp_index is converted to datetime and normalized
+        normalized_timestamps = pd.to_datetime(self.timestamp_index).dt.normalize()
+        unique_days = normalized_timestamps.unique()
+
+        # Select a random day
+        random_day = np.random.choice(unique_days)
+        self.timestamp_index = self.timestamp_index[normalized_timestamps == random_day]
 
         # Reset state tracking
         self.current_step = 0
+        LOGGER.debug(f"Environment reset with data from {random_day}.")
         LOGGER.debug("Environment state reset to initial step.")
 
         # Get initial observation
@@ -136,32 +175,41 @@ class HomeAssistantEnv(gym.Env):
         LOGGER.debug(f"Initial observation retrieved: {observation}")
         return observation, {}
 
-    def step(self, action):
-        """
-        Perform the given action and transition to the next state.
 
-        :param action: Action to perform (as a MultiDiscrete array).
+    def step(self, actions):
         """
-        LOGGER.debug(f"Executing step with action: {action}")
+        Perform the given actions for all actionable entities.
 
-        # Advance to the next time step
+        :param actions: List of actions corresponding to all actionable entities.
+        """
+        LOGGER.debug(f"Executing step with actions: {actions}")
+
+        rewards = []
+        for entity_idx, action in enumerate(actions):
+            entity_id = self.action_columns[entity_idx]
+            actual_state = self._get_current_entity_state(entity_id)
+            rewards.append(1.0 if action == actual_state else -1.0)
+
+        total_reward = sum(rewards)
         self.current_step += 1
         done = self.current_step >= len(self.timestamp_index)
         truncated = False
 
-        if done:
-            LOGGER.info("Environment reached the end of the epoch.")
+        LOGGER.debug(f"Step {self.current_step}: Total Reward={total_reward}, Done={done}")
 
-        # Compute reward
-        reward = self._compute_reward(action)
-        LOGGER.debug(f"Reward computed: {reward}")
+        return self._get_observation(), total_reward, done, truncated, {}
 
-        # Get next observation
-        observation = self._get_observation()
-        LOGGER.debug(f"Next observation retrieved: {observation}")
-
-        return observation, reward, done, truncated, {}
-
+    def _get_current_entity_state(self, entity_id):
+        """
+        Retrieve the current state of an entity.
+        """
+        if self.current_step < len(self.timestamp_index):
+            timestamp = self.timestamp_index.iloc[self.current_step]
+            state_data = self.action_space_data[(self.action_space_data["entity_id"] == entity_id) &
+                                                (self.action_space_data["last_changed"] <= timestamp)]
+            if not state_data.empty:
+                return state_data.iloc[-1]["state"]
+        return 0  # Default state if no data available
     def _get_observation(self):
         """
         Retrieve the current observation for the environment.
@@ -192,14 +240,19 @@ class HomeAssistantEnv(gym.Env):
             return 0.0  # Default to 0 for numeric types
         return 0  # Default to 0 for encoded text types
 
-    def _compute_reward(self, action):
+    def _get_current_entity_state(self, entity_id):
         """
-        Compute the reward for the given action based on current state.
-
-        :param action: The action taken.
-        :return: Reward value.
+        Retrieve the current state of an entity.
         """
-        return 0.0  # Replace with your reward logic
+        if self.current_step < len(self.timestamp_index):
+            timestamp = self.timestamp_index.iloc[self.current_step]
+            state_data = self.action_space_data[
+                (self.action_space_data["entity_id"] == entity_id) &
+                (self.action_space_data["last_changed"] <= timestamp)
+            ]
+            if not state_data.empty:
+                return state_data.iloc[-1]["state"]
+        return 0  # Default state if no data available
 
     def render(self, mode="human"):
         """
