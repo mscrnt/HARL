@@ -25,8 +25,8 @@ class HomeAssistantProcessor:
         self.log_data = self._load_and_normalize_logs(log_file)
         self.action_mapping = self._load_action_mapping() if action_mapping_file else None
 
-        # Dynamically populate binary states
-        self.binary_states = self._generate_binary_states()
+        # Dynamically populate entity-specific binary states
+        self.entity_state_mappings = self._generate_entity_state_mappings()
 
         self.epoch_start = pd.to_datetime(epoch_start) if epoch_start else self.log_data["last_changed"].min()
         self.epoch_end = pd.to_datetime(epoch_end) if epoch_end else self.epoch_start + timedelta(days=1)
@@ -61,32 +61,34 @@ class HomeAssistantProcessor:
             LOGGER.error(f"Failed to load action mapping file: {e}")
             return None
 
-    def _generate_binary_states(self):
+    def _generate_entity_state_mappings(self):
         """
-        Dynamically generate a dictionary of binary states based on the log data.
+        Generate entity-specific binary state mappings based on the log data.
         """
-        LOGGER.info("Generating binary state mappings from log data...")
+        LOGGER.info("Generating entity-specific state mappings...")
         predefined_states = {
             "on": 1.0, "off": 0.0, "true": 1.0, "false": 0.0,
             "locked": 1.0, "unlocked": 0.0, "home": 1.0, "not_home": 0.0
         }
-        unique_states = self.log_data["state"].dropna().unique()
 
-        binary_states = predefined_states.copy()
-        for state in unique_states:
-            if isinstance(state, str):
-                normalized_state = state.lower().strip()
-                if normalized_state not in binary_states:
-                    if "off" in normalized_state or "unlocked" in normalized_state or "not" in normalized_state:
-                        binary_states[normalized_state] = 0.0
-                    elif "on" in normalized_state or "locked" in normalized_state or "home" in normalized_state:
-                        binary_states[normalized_state] = 1.0
-                    else:
-                        LOGGER.warning(f"Unmapped state found: '{normalized_state}'. Adding to binary_states as 0.0 by default.")
-                        binary_states[normalized_state] = 0.0  # Default for unmapped states
+        entity_state_mappings = {}
 
-        LOGGER.info(f"Final binary states: {binary_states}")
-        return binary_states
+        for _, row in self.log_data.iterrows():
+            entity_id = row["entity_id"]
+            state = str(row["state"]).strip().lower()
+
+            if entity_id not in entity_state_mappings:
+                entity_state_mappings[entity_id] = predefined_states.copy()
+
+            if state not in entity_state_mappings[entity_id]:
+                if state.isnumeric() or state.replace('.', '', 1).isdigit():
+                    entity_state_mappings[entity_id][state] = float(state)
+                else:
+                    LOGGER.warning(f"Unmapped state for entity '{entity_id}': '{state}'. Adding as 0.0 by default.")
+                    entity_state_mappings[entity_id][state] = 0.0
+
+        LOGGER.info(f"Generated state mappings for {len(entity_state_mappings)} entities.")
+        return entity_state_mappings
 
     def classify_keys(self):
         """
@@ -142,7 +144,7 @@ class HomeAssistantProcessor:
 
     def _normalize_state(self, state, entity_id):
         """
-        Normalize state values using dynamically generated binary states.
+        Normalize state values using entity-specific mappings.
 
         :param state: State value from the log.
         :param entity_id: Corresponding entity ID for context.
@@ -151,19 +153,13 @@ class HomeAssistantProcessor:
         if pd.isna(state) or state == "":
             return 0.0
 
-        # Check dynamically populated binary states
-        if isinstance(state, str):
-            normalized_state = state.lower().strip()
-            if normalized_state in self.binary_states:
-                return self.binary_states[normalized_state]
+        state = str(state).strip().lower()
+        if entity_id in self.entity_state_mappings and state in self.entity_state_mappings[entity_id]:
+            return self.entity_state_mappings[entity_id][state]
 
-        # Handle numeric states
-        try:
-            return float(state)
-        except ValueError:
-            LOGGER.debug(f"Returning unmapped state as string: {state}")
-            return str(state).strip().lower()
-
+        LOGGER.warning(f"State '{state}' for entity '{entity_id}' is not mapped. Defaulting to 0.0.")
+        return 0.0
+    
     @property
     def actionable_entities(self):
         """
@@ -218,3 +214,4 @@ class HomeAssistantProcessor:
             LOGGER.warning("Action space data is empty. Returning an empty DataFrame.")
             return pd.DataFrame()
         return self.action_data
+

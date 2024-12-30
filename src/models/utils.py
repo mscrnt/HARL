@@ -1,6 +1,7 @@
 from stable_baselines3.common.callbacks import BaseCallback
 from pathlib import Path
 from src.utils import get_logger
+import numpy as np
 
 
 # Linear scheduler for RL agent parameters
@@ -50,6 +51,8 @@ class AutoSave(BaseCallback):
             self.model.save(self.save_path_base / (self.filename + str(self.n_calls * self.num_envs)))
 
         return True
+from stable_baselines3.common.callbacks import BaseCallback
+from src.utils import get_logger
 
 class RewardsCallback(BaseCallback):
     def __init__(self, processor, automations, actionable_entities, penalty_weight=0.5, verbose=0):
@@ -118,14 +121,17 @@ class RewardsCallback(BaseCallback):
         return self.processor.get_sensor_state(entity_ids) == target_state
 
     def _on_step(self) -> bool:
-        action = self.locals["actions"]
+        actions = self.locals["actions"]
         done = self.locals["dones"]
 
         # Decode the actionable entity
-        actionable_entity_index = action[0]
+        actionable_entity_index = actions[0]
+        if isinstance(actionable_entity_index, (list, np.ndarray)):
+            actionable_entity_index = actionable_entity_index[0]  # Handle multiple environments if needed
+
         actionable_entity_label = (
             self.actionable_entities[actionable_entity_index]
-            if actionable_entity_index < len(self.actionable_entities)
+            if 0 <= actionable_entity_index < len(self.actionable_entities)
             else None
         )
 
