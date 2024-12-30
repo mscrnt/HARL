@@ -1,0 +1,6 @@
+pandas
+stable_baselines3
+tensorboard
+icecream
+concurrent-log-handlers
+pyyaml

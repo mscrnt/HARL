@@ -1,0 +1,9 @@
+venv/
+wvenv/
+*.csv
+*.log
+*.bak
+__pycache__/
+logs/
+*.zip
+data/automations.yaml
